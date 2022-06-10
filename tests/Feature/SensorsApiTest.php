@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use Carbon\Carbon;
 use Illuminate\Support\Str;
+use Illuminate\Testing\TestResponse;
 use Symfony\Component\HttpFoundation\Response;
 use Tests\TestCase;
 
@@ -28,10 +29,7 @@ class SensorsApiTest extends TestCase
     public function testGettingStatusOfKnownSensor()
     {
         $sensorUuid = Str::random();
-        $this->postJson(self::API_URL . '/' . $sensorUuid . '/measurements', [
-            'co2' => 2000,
-            'time' => Carbon::now(),
-        ]);
+        $response = $this->sendMeasurements($sensorUuid, 2000, Carbon::now());
 
         $response = $this->get(self::API_URL . '/' . $sensorUuid);
         $response->assertStatus(200);
@@ -57,36 +55,21 @@ class SensorsApiTest extends TestCase
         Carbon::setTestNow($now);
 
         $sensorUuid = Str::random();
-        $response = $this->postJson(self::API_URL . '/' . $sensorUuid . '/measurements', [
-            'co2' => 2000,
-            'time' => '2019-02-01T18:55:47+00:00',
-        ]);
+        $response = $this->sendMeasurements($sensorUuid, 2000, $now);
         $response->assertStatus(Response::HTTP_OK);
 
-        $this->postJson(self::API_URL . '/' . $sensorUuid . '/measurements', [
-            'co2' => 2000,
-            'time' => '2019-02-01T18:55:47+00:00',
-        ]);
+        $response = $this->sendMeasurements($sensorUuid, 2000, $now);
         $response->assertStatus(Response::HTTP_TOO_MANY_REQUESTS);
 
-        $this->postJson(self::API_URL . '/' . $sensorUuid . '-another/measurements', [
-            'co2' => 2000,
-            'time' => '2019-02-01T18:55:47+00:00',
-        ]);
+        $response = $this->sendMeasurements($sensorUuid, 2000, $now);
         $response->assertStatus(Response::HTTP_OK);
 
         Carbon::setTestNow($now->addSeconds(59));
-        $this->postJson(self::API_URL . '/' . $sensorUuid . '/measurements', [
-            'co2' => 2000,
-            'time' => '2019-02-01T18:55:47+00:00',
-        ]);
+        $response = $this->sendMeasurements($sensorUuid, 2000, $now);
         $response->assertStatus(Response::HTTP_TOO_MANY_REQUESTS);
 
         Carbon::setTestNow($now->addSeconds(60));
-        $this->postJson(self::API_URL . '/' . $sensorUuid . '/measurements', [
-            'co2' => 2000,
-            'time' => '2019-02-01T18:55:47+00:00',
-        ]);
+        $response = $this->sendMeasurements($sensorUuid, 2000, $now);
         $response->assertStatus(Response::HTTP_OK);
     }
 
@@ -96,55 +79,34 @@ class SensorsApiTest extends TestCase
         $now = Carbon::now()->subMinutes(60);
 
         // When: 1 safe measurement
-        $response = $this->postJson(self::API_URL . '/' . $sensorUuid . '/measurements', [
-            'co2' => 2000,
-            'time' => $now->addMinute(),
-        ]);
+        $this->sendMeasurements($sensorUuid, 2000, $now->addMinute());
 
         // Then: status is OK
         $response = $this->get(self::API_URL . '/' . $sensorUuid);
         $response->assertExactJson(['status' => 'OK']);
 
         // When: there is 1 measurement above the threshold
-        $response = $this->postJson(self::API_URL . '/' . $sensorUuid . '/measurements', [
-            'co2' => 2001,
-            'time' => $now->addMinute(),
-        ]);
+        $this->sendMeasurements($sensorUuid, 2001, $now->addMinute());
         // Then: status is warning
         $response = $this->get(self::API_URL . '/' . $sensorUuid);
         $response->assertExactJson(['status' => 'WARN']);
 
         // When: there are 3 measurements above the threshold
-        $response = $this->postJson(self::API_URL . '/' . $sensorUuid . '/measurements', [
-            'co2' => 2001,
-            'time' => $now->addMinute(),
-        ]);
-        $response = $this->postJson(self::API_URL . '/' . $sensorUuid . '/measurements', [
-            'co2' => 2001,
-            'time' => $now->addMinute(),
-        ]);
+        $this->sendMeasurements($sensorUuid, 2001, $now->addMinute());
+        $this->sendMeasurements($sensorUuid, 2001, $now->addMinute());
         // Then: status is alert
         $response = $this->get(self::API_URL . '/' . $sensorUuid);
         $response->assertExactJson(['status' => 'ALERT']);
 
         // When: there are 2 safe measurements after the alert status
-        $response = $this->postJson(self::API_URL . '/' . $sensorUuid . '/measurements', [
-            'co2' => 2000,
-            'time' => $now->addMinute(),
-        ]);
-        $response = $this->postJson(self::API_URL . '/' . $sensorUuid . '/measurements', [
-            'co2' => 2000,
-            'time' => $now->addMinute(),
-        ]);
+        $this->sendMeasurements($sensorUuid, 2000, $now->addMinute());
+        $this->sendMeasurements($sensorUuid, 2000, $now->addMinute());
         // Then: status is still alert
         $response = $this->get(self::API_URL . '/' . $sensorUuid);
         $response->assertExactJson(['status' => 'ALERT']);
 
         // When: 3rd in a row safe measurement
-        $response = $this->postJson(self::API_URL . '/' . $sensorUuid . '/measurements', [
-            'co2' => 2000,
-            'time' => $now->addMinute(),
-        ]);
+        $this->sendMeasurements($sensorUuid, 2000, $now->addMinute());
         // Then: status is reset to OK
         $response = $this->get(self::API_URL . '/' . $sensorUuid);
         $response->assertExactJson(['status' => 'OK']);
@@ -160,19 +122,13 @@ class SensorsApiTest extends TestCase
             $expectedTimeRanges[$j]['start'] = $now->clone()->addMinute();
 
             for ($i = 1; $i <= 3; $i++) {
-                $this->postJson(self::API_URL . '/' . $sensorUuid . '/measurements', [
-                    'co2' => 2000 + $i * $j,
-                    'time' => $now->addMinute(),
-                ]);
+                $this->sendMeasurements($sensorUuid, 2000 + $i * $j, $now->addMinute());
             }
 
             $expectedTimeRanges[$j]['end'] = $now->clone()->addMinute();
 
             for ($i = 1; $i <= 3; $i++) {
-                $this->postJson(self::API_URL . '/' . $sensorUuid . '/measurements', [
-                    'co2' => 2000 - $i * $j,
-                    'time' => $now->addMinute(),
-                ]);
+                $this->sendMeasurements($sensorUuid, 2000 - $i * $j, $now->addMinute());
             }
         }
 
@@ -213,14 +169,8 @@ class SensorsApiTest extends TestCase
         $now = $now->clone();
 
         // When: there are 2 measurements in the last 30 days
-        $this->postJson(self::API_URL . '/' . $sensorUuid . '/measurements', [
-            'co2' => 2000,
-            'time' => $now,
-        ]);
-        $this->postJson(self::API_URL . '/' . $sensorUuid . '/measurements', [
-            'co2' => 2200,
-            'time' => $now->subSeconds(30 * 24 * 3600),
-        ]);
+        $this->sendMeasurements($sensorUuid, 2000, $now);
+        $this->sendMeasurements($sensorUuid, 2200, $now->subSeconds(30 * 24 * 3600));
 
         // Then: they are accounted in the statistics calculation
         $response = $this->get(self::API_URL . '/' . $sensorUuid . '/metrics');
@@ -231,16 +181,21 @@ class SensorsApiTest extends TestCase
         ]);
 
         // When: there is one measurement at least 1 second older than 30 days
-        $this->postJson(self::API_URL . '/' . $sensorUuid . '/measurements', [
-            'co2' => 2300,
-            'time' => $now->subSecond(),
-        ]);
+        $this->sendMeasurements($sensorUuid, 2300, $now->subSecond());
         // Then: it's not accounted in the statistics
         $response = $this->get(self::API_URL . '/' . $sensorUuid . '/metrics');
         $response->assertStatus(200);
         $response->assertExactJson([
             'maxLast30Days' => 2200,
             'avgLast30Days' => 2100,
+        ]);
+    }
+
+    private function sendMeasurements(string $sensorUuid, int $co2Level, Carbon $time): TestResponse
+    {
+        return $this->postJson(self::API_URL . '/' . $sensorUuid . '/measurements', [
+            'co2' => $co2Level,
+            'time' => $time,
         ]);
     }
 }
